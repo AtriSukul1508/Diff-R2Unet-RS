@@ -9,14 +9,14 @@ from diffusion import device
 
 # os.environ["CUDA_VISIBLE_DEVICES"] = "1"
 
-class Recurrent_block(nn.Module):
-    def __init__(self,ch_out,t=2):
-        super(Recurrent_block,self).__init__()
+class RecurrentBlock(nn.Module):
+    def __init__(self,out_channel,t=2):
+        super(RecurrentBlock,self).__init__()
         self.t = t
-        self.ch_out = ch_out
+        self.out_channel = out_channel
         self.conv = nn.Sequential(
-            nn.Conv3d(ch_out,ch_out,kernel_size=3,stride=1,padding=1,bias=True),
-                    nn.BatchNorm3d(ch_out),
+            nn.Conv3d(out_channel,out_channel,kernel_size=3,stride=1,padding=1,bias=True),
+                    nn.BatchNorm3d(out_channel),
                         nn.ReLU(inplace=True)
         )
 
@@ -38,25 +38,20 @@ class HetConv2D(nn.Module):
     def forward(self, x):
         return self.groupwise_conv(x) + self.pointwise_conv(x)
 
-class RRCNN_block(nn.Module):
-    def __init__(self,ch_in,ch_out,time_emb_dim=32, kernal=(4,3,3), stride=(2,1,1), padding=(1,1,1), t=2,up=False):
-        super(RRCNN_block,self).__init__()
-        self.ch_out = ch_out
-        self.RCNN = nn.Sequential(
-            Recurrent_block(ch_out,t=t),
-            Recurrent_block(ch_out,t=t)
-        )
-        self.Conv_1x1 = nn.Conv3d(ch_in,ch_out,kernel_size=3,padding=1)
-        self.time_mlp =  nn.Linear(time_emb_dim, ch_out)
-        if up:
-            self.conv1 = nn.Conv3d(2*ch_in, ch_out, 3, padding=1)
-            self.transform = nn.ConvTranspose3d(ch_out, ch_out, kernal, stride, padding)
+class RRConvBlock(nn.Module):
+    def __init__(self,in_channel,out_channel,time_emb_dim=32, kernal=(4,3,3), stride=(2,1,1), padding=(1,1,1), t=2,upsample=False):
+        super(RRConvBlock,self).__init__()
+        self.RCNN = RecurrentBlock(out_channel,t=t)
+        self.time_mlp =  nn.Linear(time_emb_dim, out_channel)
+        if upsample:
+            self.conv1 = nn.Conv3d(2*in_channel, out_channel, 3, padding=1)
+            self.transform = nn.ConvTranspose3d(out_channel, out_channel, kernal, stride, padding)
         else:
-            self.conv1 = nn.Conv3d(ch_in, ch_out, 3, padding=1)
-            self.transform = nn.Conv3d(ch_out, ch_out, kernal, stride, padding)
-        self.conv2 = nn.Conv3d(ch_out, ch_out, 3, padding=1)
-        self.bnorm1 = nn.BatchNorm3d(ch_out)
-        self.bnorm2 = nn.BatchNorm3d(ch_out)
+            self.conv1 = nn.Conv3d(in_channel, out_channel, 3, padding=1)
+            self.transform = nn.Conv3d(out_channel, out_channel, kernal, stride, padding)
+        self.conv2 = nn.Conv3d(out_channel, out_channel, 3, padding=1)
+        self.bnorm1 = nn.BatchNorm3d(out_channel)
+        self.bnorm2 = nn.BatchNorm3d(out_channel)
         self.relu  = nn.ReLU()
     def forward(self,x,t):
         h = self.bnorm1(self.relu(self.conv1(x)))
@@ -64,7 +59,7 @@ class RRCNN_block(nn.Module):
         time_emb = time_emb[(..., ) + (None, ) * 3]
         x = h + time_emb
         x = self.bnorm2(self.relu(self.conv2(x)))
-        x1 = self.RCNN(x)
+        x1 = self.RCNN(self.RCNN((x)))
         return self.transform(x + x1)
 
 
@@ -76,49 +71,32 @@ class SinusoidalPositionEmbeddings(nn.Module):
     def forward(self, time):
         device = time.device
         half_dim = self.dim // 2
-        embeddings = math.log(10000) / (half_dim - 1)
-        embeddings = torch.exp(torch.arange(half_dim, device=device) * -embeddings)
-        embeddings = time[:, None] * embeddings[None, :]
-        embeddings = torch.cat((embeddings.sin(), embeddings.cos()), dim=-1)
-        # TODO: Double check the ordering here
-        return embeddings
+        embeds = math.log(10000) / (half_dim - 1)
+        embeds = torch.exp(torch.arange(half_dim, device=device) * -embeds)
+        embeds = time[:, None] * embeds[None, :]
+        return torch.cat((embeds.sin(), embeds.cos()), dim=-1)
 
 
 class R2UNet(nn.Module):
     def __init__(self,_image_channels,t=1):
         super(R2UNet,self).__init__()
-        down_channels = (16,32,64,128)
-        down_params = [
-            [(4,5,5),(2,1,1),(1,2,2)],
-            [(4,5,5),(2,1,1),(1,2,2)],
-            [(4,5,5),(2,1,1),(1,2,2)],
-        ]
-        up_channels = (128,64,32,16)
-        up_params = [
-            [(4,5,5),(2,1,1),(1,2,2)],
-            [(4,5,5),(2,1,1),(1,2,2)],
-            [(4,5,5),(2,1,1),(1,2,2)],
-        ]
+        channels = [16,32,64,128]
+        params = [(4,5,5),(2,1,1),(1,2,2)]
         time_emb_dim = 32
-        self.downs = nn.ModuleList([RRCNN_block(ch_in=down_channels[i], ch_out=down_channels[i+1], time_emb_dim=time_emb_dim, \
-                                     kernal=down_params[i][0], stride=down_params[i][1], padding=down_params[i][2],t=t) \
-                    for i in range(len(down_channels)-1)])
-        self.RCNNups = nn.ModuleList([RRCNN_block(up_channels[i], up_channels[i+1], time_emb_dim, \
-                                     up_params[i][0], up_params[i][1], up_params[i][2],t=t,up=True) \
-                    for i in range(len(up_channels)-1)])
+        self.downs = nn.ModuleList([RRConvBlock(in_channel=channels[i], out_channel=channels[i+1], time_emb_dim=time_emb_dim,kernal=params[0], stride=params[1], padding=params[2],t=t) \
+                    for i in range(0,len(channels)-1)])
+        self.RCNNups = nn.ModuleList([RRConvBlock(channels[3-i], channels[3-(i+1)], time_emb_dim,params[0], params[1], params[2],t=t,upsample=True) \
+                    for i in range(0,len(channels)-1)])
 
 
-        self.Conv_1x1 = nn.Conv3d(up_channels[-1],_image_channels,kernel_size=1,stride=1,padding=0)
+        self.out_conv = nn.Conv3d(channels[0],_image_channels,kernel_size=1,stride=1,padding=0)
         self.time_mlp = nn.Sequential(
                 SinusoidalPositionEmbeddings(time_emb_dim),
                 nn.Linear(time_emb_dim, time_emb_dim),
                 nn.ReLU()
             )
         self.hetconv_layer = nn.Sequential(
-            HetConv2D(_image_channels, 16,
-                p = 1,
-                g = 1,
-                ),
+            HetConv2D(_image_channels, 16,p = 1,g = 1),
             nn.BatchNorm2d(16),
             nn.GELU()
         )
@@ -140,12 +118,7 @@ class R2UNet(nn.Module):
             if feature:
                 self.features.append(x.detach().cpu().numpy())
             x = rcnn_up(x,t)
-        return self.Conv_1x1(x)
-    def return_features(self):
-        temp_features = []
-        temp_features = self.features[:]
-        self.features = []
-        return temp_features
+        return self.out_conv(x)
 
 
 
