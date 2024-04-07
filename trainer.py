@@ -27,9 +27,11 @@ def trainer():
         
     dataloader = HSI_Loader({"data":{"dataset":datasetName}})
     trainLoader,*rest = dataloader.dataset()
-    diffusion = Diffusion(T=T)
-    model = R2UNet(_image_channels=1)
+    diffusion = Diffusion(T)
     optimizer = SGD(model.parameters(), lr=lr, momentum=0.9)
+
+    
+    model = R2UNet(_image_channels=1)
     model.to(device)
 
 
@@ -39,7 +41,7 @@ def trainer():
             optimizer.zero_grad()
             batchSize = batch.shape[0]
             t = torch.randint(0, diffusion.T , (batchSize,), device=device).long()
-            loss = diffusion.get_loss(model, batch, t)
+            loss = diffusion.loss_func(model, batch, t)
             loss.backward()
             optimizer.step()
 
