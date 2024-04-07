@@ -37,16 +37,16 @@ def trainer():
 
     for epoch in range(EPOCH):
         for step, (batch, _) in enumerate(trainLoader):
-            batch = batch.to(device)
             optimizer.zero_grad()
-            batchSize = batch.shape[0]
-            t = torch.randint(0, diffusion.T , (batchSize,), device=device).long()
+            
+            batch = batch.to(device)
+            t = torch.randint(0, diffusion.T , (batch.shape[0],), device=device).long()
             loss = diffusion.loss_func(model, batch, t)
             loss.backward()
             optimizer.step()
 
             if step % 100 == 0:
-                print(f"Epoch {epoch} : step {step:03d} Loss: {loss.item()} ")
+                print(f"Epoch: {epoch} -- step: {step:03d} Loss: {loss.item()} ")
 
         if epoch % 100 == 0:
             torch.save(model.state_dict(), f"{path}/PU_R2Unet_{epoch}.pkl")
