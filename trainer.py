@@ -20,7 +20,7 @@ NoOfBands = 104
 
 path = f"./model/{datasetName}_diff" 
 
-def trainer():
+def train():
     if not os.path.exists(path):
         os.makedirs(path)
         
@@ -54,4 +54,4 @@ def trainer():
 
 
 if __name__ == "__main__":
-    trainer()
+    train()
