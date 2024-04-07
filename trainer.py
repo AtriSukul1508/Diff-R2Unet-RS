@@ -39,7 +39,7 @@ def trainer():
             optimizer.zero_grad()
             batchSize = batch.shape[0]
             t = torch.randint(0, diffusion.T , (batchSize,), device=device).long()
-            loss, *rest = diffusion.get_loss(model, batch, t)
+            loss = diffusion.get_loss(model, batch, t)
             loss.backward()
             optimizer.step()
 
